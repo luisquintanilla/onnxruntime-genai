@@ -4,6 +4,7 @@
 #include "logits.h"
 #include "kv_cache.h"
 #include "position_inputs.h"
+#include "cache_manager.h"
 
 namespace Generators {
 
@@ -30,8 +31,8 @@ struct DecoderOnly_State : State {
 
   InputIDs input_ids_{model_, *this};
   Logits logits_{model_, *this};
-  KV_Cache kv_cache_{model_, *this};
   PositionInputs position_inputs_;
+  std::unique_ptr<CacheManagerInterface> kv_cache_;
 };
 
 }  // namespace Generators

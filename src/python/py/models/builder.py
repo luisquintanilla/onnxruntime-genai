@@ -68,6 +68,10 @@ class Model:
             "inputs_embeds": self.io_dtype,                                                                      # For standard models where you want to remove the embedding layer from the model (note that `inputs_embeds` is written this way to match Hugging Face format)
             "past_key_values.key": self.io_dtype,                                                                # For standard models (note that `past_key_values.key` is written this way to match Hugging Face format)
             "past_key_values.value": self.io_dtype,                                                              # For standard models (note that `past_key_values.value` is written this way to match Hugging Face format)
+            "key_cache": self.io_dtype,                                                                         # For PagedAttention
+            "value_cache": self.io_dtype,                                                                       # For PagedAttention
+            "block_tables": TensorProto.INT32,                                                                  # For PagedAttention
+            "slot_mappings": TensorProto.INT32,                                                                 # For PagedAttention
         }
         self.input_shapes = {
             "input_ids": ["batch_size", "sequence_length"],                                                      # For standard models
@@ -76,6 +80,10 @@ class Model:
             "inputs_embeds": ["batch_size", "sequence_length", self.hidden_size],                                # For standard models where you want to remove the embedding layer from the model (note that `inputs_embeds` is written this way to match Hugging Face format)
             "past_key_values.key": ["batch_size", self.num_kv_heads, "past_sequence_length", self.head_size],    # For standard models (note that `past_key_values.key` is written this way to match Hugging Face format)
             "past_key_values.value": ["batch_size", self.num_kv_heads, "past_sequence_length", self.head_size],  # For standard models (note that `past_key_values.value` is written this way to match Hugging Face format)
+            "key_cache": ["num_blocks", "block_size"],                                                           # For PagedAttention
+            "value_cache": ["num_blocks", "block_size"],                                                         # For PagedAttention
+            "block_tables": ["batch_size", "max_blocks_per_sequence"],                                           # For PagedAttention
+            "slot_mappings": ["batch_size", "sequence_length"],                                                  # For PagedAttention
         }
         self.exclude_embeds = "exclude_embeds" in extra_options
         if self.exclude_embeds:
@@ -167,7 +175,13 @@ class Model:
             "use_rotemb_in_attn": False,                     # Use rotary embeddings within attention op (instead of a separate RotaryEmbedding op)
             "use_packed_matmul": False,                      # Use packed MatMul (instead of 3 separate MatMuls for Q/K/V)
         }
-        if self.ep in {"cuda", "dml"} and self.io_dtype == TensorProto.FLOAT16:
+        if "use_paged_attention" in extra_options and extra_options["use_paged_attention"] == "True":
+            self.attention_attrs["op_type"] = "PagedAttention"
+            print("PagedAttention is used in this model. PagedAttention requires the block based KV cache.")
+
+            self.input_names.extend(["block_tables", "slot_mappings"])
+
+        elif self.ep in {"cuda", "dml"} and self.io_dtype == TensorProto.FLOAT16:
             # Change model settings for GroupQueryAttention
             self.attention_attrs["op_type"] = "GroupQueryAttention"
             print("GroupQueryAttention (GQA) is used in this model. GQA is currently supported only for INT4 and FP16 on the CUDA and DML execution providers.")
@@ -402,18 +416,27 @@ class Model:
             outputs.append(helper.make_tensor_value_info(name, dtype, shape=shape))
 
         # Add KV cache to inputs and outputs
-        for i in range(self.num_layers):
-            # Add KV cache to inputs
-            key_name = f"past_key_values.{i}.key"
-            inputs.append(helper.make_tensor_value_info(key_name, self.input_types["past_key_values.key"], shape=self.input_shapes["past_key_values.key"]))
-            value_name = f"past_key_values.{i}.value"
-            inputs.append(helper.make_tensor_value_info(value_name, self.input_types["past_key_values.value"], shape=self.input_shapes["past_key_values.value"]))
+        if not self.attention_attrs["op_type"] == "PagedAttention":
+            for i in range(self.num_layers):
+                # Add KV cache to inputs
+                key_name = f"past_key_values.{i}.key"
+                inputs.append(helper.make_tensor_value_info(key_name, self.input_types["past_key_values.key"], shape=self.input_shapes["past_key_values.key"]))
+                value_name = f"past_key_values.{i}.value"
+                inputs.append(helper.make_tensor_value_info(value_name, self.input_types["past_key_values.value"], shape=self.input_shapes["past_key_values.value"]))
 
-            # Add KV cache to outputs
-            key_name = f"present.{i}.key"
-            outputs.append(helper.make_tensor_value_info(key_name, self.output_types["present.key"], shape=self.output_shapes["present.key"]))
-            value_name = f"present.{i}.value"
-            outputs.append(helper.make_tensor_value_info(value_name, self.output_types["present.value"], shape=self.output_shapes["present.value"]))
+                # Add KV cache to outputs
+                key_name = f"present.{i}.key"
+                outputs.append(helper.make_tensor_value_info(key_name, self.output_types["present.key"], shape=self.output_shapes["present.key"]))
+                value_name = f"present.{i}.value"
+                outputs.append(helper.make_tensor_value_info(value_name, self.output_types["present.value"], shape=self.output_shapes["present.value"]))
+        else:
+            for i in range(self.num_layers):
+                # Add KV cache to inputs
+                key_name = f"key_cache.{i}"
+                inputs.append(helper.make_tensor_value_info(key_name, self.input_types["key_cache"], shape=self.input_shapes["key_cache"]))
+                value_name = f"value_cache.{i}"
+                inputs.append(helper.make_tensor_value_info(value_name, self.input_types["value_cache"], shape=self.input_shapes["value_cache"]))
+
 
         self.inputs = inputs
         self.outputs = outputs
@@ -874,6 +897,10 @@ class Model:
             self.make_multi_head_attention(name, add_qk=f"{self.mask_attrs['mask_name']}/output_0", **kwargs)
         elif op_type == "GroupQueryAttention":
             self.make_group_query_attention(name, seqlens_k=f"{self.mask_attrs['seqlens_k']}/output_0", total_seq_len=f"{self.mask_attrs['total_seq_len']}/output_0", **kwargs)
+        elif op_type == "PagedAttention":
+            seqlens_k_name = f"{self.mask_attrs['seqlens_k']}/output_0"
+            total_seq_len_name = f"{self.mask_attrs['total_seq_len']}/output_0"
+            self.make_paged_attention(name, seqlens_k=seqlens_k_name, total_seq_len=total_seq_len_name, **kwargs)
         else:
             raise NotImplementedError(f"The {op_type} op is not currently supported.")
 
@@ -903,6 +930,22 @@ class Model:
         self.make_node(
             "GroupQueryAttention", inputs=inputs, outputs=outputs, name=name, domain="com.microsoft",
             num_heads=self.num_attn_heads, kv_num_heads=self.num_kv_heads, scale=self.attention_attrs["scale"], # local_window_size=self.window_size,  # Disable sliding window attribute temporarily
+            do_rotary=self.attention_attrs["use_rotemb_in_attn"], rotary_interleaved=self.rotemb_attrs["interleaved"],
+        )
+        self.make_value_info(output, self.io_dtype, shape=['batch_size', 'sequence_length', self.head_size * self.num_attn_heads])
+
+    def make_paged_attention(self, name, **kwargs):
+        inputs = [
+            kwargs["q_path"], kwargs["k_path"], kwargs["v_path"],
+            kwargs["key_cache"], kwargs["value_cache"],
+            kwargs["block_tables"], kwargs["slot_mappings"],
+            kwargs["seqlens_k"], kwargs["total_seq_len"],
+        ]
+        output = f"{name}/output_0"
+        outputs = [output]
+        self.make_node(
+            "PagedAttention", inputs=inputs, outputs=outputs, name=name, domain="com.microsoft",
+            num_heads=self.num_attn_heads, kv_num_heads=self.num_kv_heads, local_window_size=self.window_size,
             do_rotary=self.attention_attrs["use_rotemb_in_attn"], rotary_interleaved=self.rotemb_attrs["interleaved"],
         )
         self.make_value_info(output, self.io_dtype, shape=['batch_size', 'sequence_length', self.head_size * self.num_attn_heads])
@@ -1009,6 +1052,12 @@ class Model:
             k_input_to_attention = self.make_repeat_kv(layer_id, root_input=k_input_to_attention, past_kv=past_k, present_kv=present_k)
             v_input_to_attention = self.make_repeat_kv(layer_id, root_input=v_input_to_attention, past_kv=past_v, present_kv=present_v)
             past_k, past_v, present_k, present_v = "", "", "", ""
+
+        if self.attention_attrs["op_type"] == "PagedAttention":
+            kwargs["key_cache"] = f"key_cache.{layer_id}"
+            kwargs["value_cache"] = f"value_cache.{layer_id}"
+            kwargs["block_tables"] = "block_tables"
+            kwargs["slot_mappings"] = "slot_mappings"
 
         # Make attention node (e.g. MultiHeadAttention, GroupQueryAttention, etc.)
         attn_name = f"/model/layers.{layer_id}/attn/{self.attention_attrs['op_type']}"
@@ -1249,8 +1298,8 @@ class Model:
             # This assertion is temporary.
             assert self.past_present_share_buffer
 
-        if self.attention_attrs["op_type"] == "GroupQueryAttention":
-            self.make_attention_mask_reformatting_for_gqa()
+        if self.attention_attrs["op_type"] == "GroupQueryAttention" or self.attention_attrs["op_type"] == "PagedAttention":
+            self.make_attention_mask_reformatting_for_gqa()            
         elif self.attention_attrs["op_type"] == "MultiHeadAttention":
             # Make attention mask reformatting nodes
             #

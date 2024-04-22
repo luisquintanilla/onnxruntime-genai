@@ -235,6 +235,31 @@ struct Eos_Array_Element : JSON::Element {
 
  private:
   Config::Model& v_;
+}
+
+struct KVCache_Element : JSON::Element {
+  explicit KVCache_Element(Config::Model::KVCache& v) : v_{v} {}
+
+  void OnNumber(std::string_view name, double value) override {
+    if (name == "block_size") {
+      v_.block_size = static_cast<int32_t>(value);
+    } else if (name == "num_blocks") {
+      v_.num_blocks = static_cast<int32_t>(value);
+    } else if (name == "gpu_utilization_factor") {
+      v_.gpu_utilization_factor = static_cast<float>(value);
+    } else
+      throw JSON::unknown_value_error{};
+  }
+
+  void OnBool(std::string_view name, bool value) override {
+    if (name == "paged_cache") {
+      v_.paged_cache = value;
+    } else
+      throw JSON::unknown_value_error{};
+  }
+
+ private:
+  Config::Model::KVCache& v_;
 };
 
 struct Model_Element : JSON::Element {
@@ -287,6 +312,7 @@ struct Model_Element : JSON::Element {
   EncoderDecoderInit_Element encoder_decoder_init_{v_.encoder_decoder_init};
   Decoder_Element decoder_{v_.decoder};
   Eos_Array_Element eos_token_ids_{v_};
+  KVCache_Element kv_cache_{v_.kv_cache};
 };
 
 struct Search_Element : JSON::Element {
