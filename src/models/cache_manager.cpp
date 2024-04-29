@@ -11,13 +11,13 @@ namespace Generators {
 
 namespace {
 
-constexpr int32_t BlockTablePadValue = -1;
-constexpr int32_t SlotMappingPadValue = -1;
 constexpr char KeyCacheNamePrefix[] = "key_cache.";
 constexpr char ValueCacheNamePrefix[] = "value_cache.";
 constexpr char BlockTablesName[] = "block_tables";
 constexpr char SlotMappingName[] = "slot_mapping";
+constexpr int32_t BlockTablePadValue = -1;
 constexpr int32_t DefaultBlockSize = 16;
+constexpr int32_t BlockAvailable = 0;
 constexpr float DefaultCacheGPUUtilizationFactor = 0.3f;
 
 std::pair<std::unique_ptr<OrtValue>, std::unique_ptr<OrtValue>> AllocateLayerCache(
@@ -93,6 +93,7 @@ PagedCacheManager::PagedCacheManager(const CacheOptions& cache_options,
       cpu_allocator_(cpu_allocator),
       gpu_allocator_(gpu_allocator) {
   ComputeNumBlocks(options_);
+  block_refs_.resize(options_.num_blocks_, BlockAvailable);
   for (int64_t i = 0; i < options_.num_layers_; ++i) {
     cache_.emplace_back(AllocateLayerCache(options_, *gpu_allocator_));
   }
@@ -100,8 +101,8 @@ PagedCacheManager::PagedCacheManager(const CacheOptions& cache_options,
 
 std::vector<size_t> PagedCacheManager::FindAvailableBlocks(size_t num_blocks_needed) {
   std::vector<size_t> free_blocks;
-  for (size_t i = 0; i < available_blocks_.size(); ++i) {
-    if (available_blocks_[i]) {
+  for (size_t i = 0; i < block_refs_.size(); ++i) {
+    if (block_refs_[i] == BlockAvailable) {
       free_blocks.push_back(i);
       if (free_blocks.size() == num_blocks_needed) {
         break;
@@ -118,13 +119,17 @@ std::vector<size_t> PagedCacheManager::FindAvailableBlocks(size_t num_blocks_nee
 
 void PagedCacheManager::ReserveBlocks(const std::vector<size_t>& block_ids) {
   for (size_t block_id : block_ids) {
-    available_blocks_[block_id] = false;
+    block_refs_[block_id]++;
   }
 }
 
-void PagedCacheManager::FreeBlocks(const std::vector<size_t>& block_ids) {
+void PagedCacheManager::ReleaseBlocks(const std::vector<size_t>& block_ids) {
   for (size_t block_id : block_ids) {
-    available_blocks_[block_id] = true;
+    block_refs_[block_id]--;
+    if (block_refs_[block_id] < 0) {
+      // This should never happen.
+      throw std::runtime_error("Block reference count is negative.");
+    }
   }
 }
 
@@ -156,7 +161,7 @@ void PagedCacheManager::Remove(size_t sequence_id) {
     return;
   }
 
-  FreeBlocks(found_block_info->second->block_ids);
+  ReleaseBlocks(found_block_info->second->block_ids);
   block_infos_.erase(found_block_info->second);
   block_tables_.erase(found_block_info);
 }
@@ -214,20 +219,15 @@ OrtValue* PagedCacheManager::BlockTables() {
 }
 
 OrtValue* PagedCacheManager::SlotMapping() {
-  size_t max_slots = 0;
-  for (const auto& block_info : block_infos_) {
-    max_slots = std::max(max_slots, block_info.slot_ids.size());
-  }
-  std::vector<int64_t> shape = {static_cast<int64_t>(block_infos_.size()), static_cast<int64_t>(max_slots)};
+  size_t num_tokens = std::accumulate(block_infos_.begin(), block_infos_.end(), num_tokens,
+                                      [](size_t acc, const auto& block_info) { return acc + block_info.slot_ids.size(); });
+  std::vector<int64_t> shape = {static_cast<int64_t>(num_tokens)};
   slot_mapping_value_ = OrtValue::CreateTensor(*cpu_allocator_, shape, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32);
   auto* slot_mapping_data = slot_mapping_value_->GetTensorMutableData<int32_t>();
   size_t block_info_idx = 0;
   for (const auto& block_info : block_infos_) {
     for (size_t i = 0; i < block_info.slot_ids.size(); ++i) {
-      slot_mapping_data[block_info_idx] = block_info.slot_ids[i];
-    }
-    for (size_t i = block_info.slot_ids.size(); i < max_slots; ++i) {
-      slot_mapping_data[block_info_idx] = SlotMappingPadValue;
+      slot_mapping_data[block_info_idx++] = block_info.slot_ids[i];
     }
   }
   return slot_mapping_value_.get();
@@ -241,8 +241,9 @@ OrtValue* PagedCacheManager::SlotMapping() {
 //   return order;
 // }
 
-// void PagedCacheManager::ReorderCache(const std::vector<size_t>& order) {
-
-// }
+void PagedCacheManager::ReorderCache(const std::vector<size_t>& index_permutation) {
+  // After reordering the cache, we might have shared resources between sequences.
+  // We need to update the block_refs_ accordingly.
+}
 
 }  // namespace Generators

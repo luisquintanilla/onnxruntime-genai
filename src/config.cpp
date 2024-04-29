@@ -235,7 +235,7 @@ struct Eos_Array_Element : JSON::Element {
 
  private:
   Config::Model& v_;
-}
+};
 
 struct KVCache_Element : JSON::Element {
   explicit KVCache_Element(Config::Model::KVCache& v) : v_{v} {}
@@ -303,6 +303,9 @@ struct Model_Element : JSON::Element {
     }
     if (name == "decoder") {
       return decoder_;
+    }
+    if (name == "kv_cache") {
+      return kv_cache_;
     }
     throw JSON::unknown_value_error{};
   }
