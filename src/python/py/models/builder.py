@@ -969,6 +969,7 @@ class Model:
             kwargs["key_cache"], kwargs["value_cache"],
             kwargs["block_tables"], kwargs["slot_mappings"],
             kwargs["seqlens_k"], kwargs["total_seq_len"],
+            kwargs["cos_cache"], kwargs["sin_cache"],
         ]
         output = f"{name}/output_0"
         outputs = [output]
