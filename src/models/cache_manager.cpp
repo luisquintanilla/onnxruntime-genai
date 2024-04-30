@@ -244,6 +244,13 @@ OrtValue* PagedCacheManager::SlotMapping() {
 void PagedCacheManager::ReorderCache(const std::vector<size_t>& index_permutation) {
   // After reordering the cache, we might have shared resources between sequences.
   // We need to update the block_refs_ accordingly.
+
+  // 1. Update the block_refs_ for the new order.
+  // [0, 1, 2, 3]
+  // [2, 1, 1, 3]
+
+  // 2. Update the block_tables_ and block_infos_.
+  
 }
 
 }  // namespace Generators
