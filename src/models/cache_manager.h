@@ -105,7 +105,7 @@ class PagedCacheManager {
 
   // Reorder the cache based on the given order.
   // This is needed when the order of the inputs changes due to beam search.
-  void ReorderCache(const std::vector<size_t>& sequence_id_permutation);
+  void ReorderCache(const std::unordered_map<size_t, size_t>& sequence_id_mapping);
 
  private:
   using LayerCache = std::unique_ptr<OrtValue>;  // Shape: [num_blocks, block_size * num_kv_heads * head_size]

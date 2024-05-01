@@ -241,15 +241,37 @@ OrtValue* PagedCacheManager::SlotMapping() {
 //   return order;
 // }
 
-void PagedCacheManager::ReorderCache(const std::vector<size_t>& index_permutation) {
+void PagedCacheManager::ReorderCache(const std::unordered_map<size_t, size_t>& sequence_id_mapping) {
   // After reordering the cache, we might have shared resources between sequences.
   // We need to update the block_refs_ accordingly.
+  // IMP: Remember that the cache may contain sequences that the user may not be interested in.
+  // so, offer a way for the user to specify the mapping from the sequence id to the location in the cache
 
   // 1. Update the block_refs_ for the new order.
   // [0, 1, 2, 3]
   // [2, 1, 1, 3]
+  for (auto& [pointer, pointee] : sequence_id_mapping) {
+    if (pointer == pointee) {
+      continue;
+    }
+    block_refs_[pointee] = block_refs_[pointer];
 
-  // 2. Update the block_tables_ and block_infos_.
+  }
+  // std::unordered_set<size_t> retained_sequence_ids(sequence_index_permutation.begin(), sequence_index_permutation.end());
+  // for (auto& [sequence_id, block_info] : block_tables_) {
+  //   if (retained_sequence_ids.count(sequence_id)) {
+      
+  //   }
+
+  //   // The sequence is missing in the new order. Release the blocks.
+  //   ReleaseBlocks(block_info->block_ids);
+  //   missing_sequence_ids.insert(sequence_id);
+  // }
+  // std::unordered_set<size_t> missing_sequence_ids;
+
+  // 2. Update the block tables so sequences point to the correct blocks in memory based on the new shape.
+
+  // 3. Reorder the cache based on the new order.
   
 }
 
